@@ -7,9 +7,6 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from pytube import YouTube
 
-# Add caching to improve performance
-@st.cache_data(ttl=3600)
-
 # Set page configuration
 st.set_page_config(
     page_title="Telugu Translator",
