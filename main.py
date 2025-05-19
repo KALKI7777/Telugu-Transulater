@@ -1,11 +1,14 @@
 import streamlit as st
-from googletrans import Translator
 import re
 import time
+import json
+import requests
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from pytube import YouTube
-import requests
+
+# Add caching to improve performance
+@st.cache_data(ttl=3600)
 
 # Set page configuration
 st.set_page_config(
@@ -57,10 +60,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Function to translate text safely
+# Function to translate text safely with caching
+@st.cache_data(ttl=3600)
 def safe_translate(text, src='auto', dest='te'):
+    if not text.strip():
+        return {'text': '', 'src': src, 'dest': dest}
+        
     try:
-        # Use a direct HTTP request approach instead of googletrans
+        # Use a direct HTTP request approach to Google Translate API
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
             "client": "gtx",
@@ -72,25 +79,52 @@ def safe_translate(text, src='auto', dest='te'):
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate, br"
         }
         
-        response = requests.get(url, params=params, headers=headers)
-        if response.status_code == 200:
-            result = response.json()
-            translated_text = ''.join([sentence[0] for sentence in result[0]])
-            detected_lang = result[2] if src == 'auto' else src
+        # Add retry mechanism
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                response = requests.get(url, params=params, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    result = response.json()
+                    translated_text = ''.join([sentence[0] for sentence in result[0] if sentence and len(sentence) > 0])
+                    detected_lang = result[2] if src == 'auto' and len(result) > 2 else src
+                    return {
+                        'text': translated_text,
+                        'src': detected_lang,
+                        'dest': dest
+                    }
+                elif response.status_code == 429:
+                    # Rate limited, wait and retry
+                    retry_count += 1
+                    time.sleep(2 * retry_count)  # Exponential backoff
+                else:
+                    st.error(f"Translation API error: {response.status_code}")
+                    return {
+                        'text': f"[Translation error: API returned status code {response.status_code}]",
+                        'src': src,
+                        'dest': dest
+                    }
+            except requests.exceptions.Timeout:
+                retry_count += 1
+                time.sleep(2 * retry_count)  # Exponential backoff
+            except Exception as e:
+                st.error(f"Request error: {str(e)}")
+                break
+                
+        # Fallback message if all retries failed
+        if retry_count >= max_retries:
             return {
-                'text': translated_text,
-                'src': detected_lang,
-                'dest': dest
-            }
-        else:
-            st.error(f"Translation API error: {response.status_code}")
-            return {
-                'text': f"[Translation error: API returned status code {response.status_code}]",
+                'text': "[Translation temporarily unavailable. Please try again later.]",
                 'src': src,
                 'dest': dest
             }
+                
     except Exception as e:
         st.error(f"Translation error: {str(e)}")
         return {
